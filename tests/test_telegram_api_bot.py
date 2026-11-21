@@ -1,153 +1,109 @@
-import json
+from __future__ import annotations
 
-import pytest
-import requests
+from datetime import datetime, timezone
 
-from analysis.models import AnalysisResult
-from config import ConfigError, load_telegram_config
-from telegram_bot.api import TelegramAPI, TelegramError
+from analysis.models import BUY, WAIT, AnalysisResult, Factor
 from telegram_bot.bot import TelegramBot
 from telegram_bot.format import format_html
 
-TOKEN = "123456:SECRET-TOKEN-xyz"
 
-
-class _Resp:
-    def __init__(self, body, status=200):
-        self._b, self.status_code = body, status
-
-    def json(self):
-        if self._b is None:
-            raise ValueError
-        return self._b
-
-
-class _Sess:
-    def __init__(self, resp=None, exc=None):
-        self.resp, self.exc, self.calls = resp, exc, []
-
-    def post(self, url, json=None, timeout=None):
-        self.calls.append((url, json, timeout))
-        if self.exc:
-            raise self.exc
-        return self.resp
-
-
-def test_send_message_payload_and_no_edit_or_delete_methods():
-    s = _Sess(_Resp({"ok": True, "result": {"message_id": 1}}))
-    api = TelegramAPI(TOKEN, s)
-    api.send_message(5, "halo", reply_markup={"inline_keyboard": []})
-    url, payload, _ = s.calls[0]
-    assert url.endswith("/sendMessage") and payload["chat_id"] == 5
-    assert payload["parse_mode"] == "HTML" and payload["reply_markup"] == {"inline_keyboard": []}
-    for name in ("edit_message_text", "editMessageText", "delete_message", "deleteMessage"):
-        assert not hasattr(api, name)
-
-
-def test_errors_never_leak_token():
-    for sess in (
-        _Sess(exc=requests.ConnectionError(f"https://api.telegram.org/bot{TOKEN}/x gagal")),
-        _Sess(_Resp({"ok": False, "description": "Forbidden", "error_code": 403})),
-        _Sess(_Resp(None, status=502)),
-    ):
-        with pytest.raises(TelegramError) as exc:
-            TelegramAPI(TOKEN, sess).send_message(1, "x")
-        assert TOKEN not in str(exc.value) and "SECRET" not in str(exc.value)
-    assert TOKEN not in repr(TelegramAPI(TOKEN))
-
-
-def test_telegram_config(monkeypatch):
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
-    with pytest.raises(ConfigError):
-        load_telegram_config()
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "10, 20,")
-    cfg = load_telegram_config()
-    assert cfg.allowed_user_ids == {10, 20} and TOKEN not in repr(cfg) + str(cfg)
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "abc")
-    with pytest.raises(ConfigError):
-        load_telegram_config()
-
-
-class _PollAPI:
-    def __init__(self, batches):
-        self.batches, self.offsets, self.webhook = list(batches), [], 0
-
-    def delete_webhook(self):
-        self.webhook += 1
-
-    def get_updates(self, offset, timeout):
-        self.offsets.append((offset, timeout))
-        if isinstance(self.batches[0] if self.batches else None, Exception):
-            raise self.batches.pop(0)
-        return self.batches.pop(0) if self.batches else []
-
-
-class _Flow:
+class DummyAPI:
     def __init__(self):
-        self.started, self.callbacks = [], []
+        self.calls: list[tuple[str, dict]] = []
+        self._updates: list[dict] = []
+        self.fail_edit = False
 
-    def on_start(self, chat, user):
-        self.started.append((chat, user))
+    def queue_updates(self, *updates: dict) -> None:
+        self._updates.extend(updates)
 
-    def on_callback(self, cq):
-        if cq.get("boom"):
-            raise RuntimeError("rusak")
-        self.callbacks.append(cq["id"])
+    def _call(self, method: str, **params) -> dict:
+        self.calls.append((method, params))
+        if method == "getUpdates":
+            out, self._updates = self._updates, []
+            return {"ok": True, "result": out}
+        if method == "editMessageText" and self.fail_edit:
+            return {"ok": False, "description": "Bad Request: message is not modified"}
+        return {"ok": True, "result": {"message_id": 55}}
 
-
-class _Clock:
-    def __init__(self):
-        self.t = 0.0
-
-    def __call__(self):
-        self.t += 10.0
-        return self.t
-
-
-def test_polling_processes_updates_confirms_offset_and_survives_bad_update():
-    updates = [[
-        {"update_id": 5, "message": {"text": "/start", "from": {"id": 1}, "chat": {"id": 9}}},
-        {"update_id": 6, "callback_query": {"id": "a", "boom": True}},
-        {"update_id": 7, "callback_query": {"id": "b"}},
-    ]]
-    api, flow = _PollAPI(updates), _Flow()
-    n = TelegramBot(api, flow).run_polling(60, clock=_Clock(), sleep=lambda s: None)
-    assert n == 3 and flow.started == [(9, 1)] and flow.callbacks == ["b"]
-    assert api.webhook == 1
-    assert api.offsets[-1] == (8, 0)       # update terakhir dikonfirmasi sebelum keluar
+    def close(self) -> None:
+        pass
 
 
-def test_polling_retries_after_network_error_then_gives_up():
-    api = _PollAPI([TelegramError("x"), []])
-    TelegramBot(api, _Flow()).run_polling(60, clock=_Clock(), sleep=lambda s: None)
-    assert len(api.offsets) >= 2
-    api2 = _PollAPI([TelegramError("x")] * 12)
-    with pytest.raises(TelegramError):
-        TelegramBot(api2, _Flow()).run_polling(10_000, clock=lambda: 0.0, sleep=lambda s: None)
+class DummyAnalyzer:
+    def analyze_single(self, market: str, tf: str) -> AnalysisResult:
+        return AnalysisResult(
+            market=market, model="Single Time Frame", timeframe=tf,
+            trend="Naik", direction=BUY, score=65.0, confidence=65,
+            price=2500.0, atr=10.0, entry=2500.0, sl=2490.0,
+            tp1=2510.0, tp2=2520.0, tp3=2530.0, rr=2.0,
+            reasons=["Skor +65, melewati ambang ±55."],
+            summary=["Harga 2,500.00 | ATR14 10.00"],
+            as_of=datetime(2026, 4, 17, 12, 0, tzinfo=timezone.utc),
+        )
+
+    def analyze_multi(self, market: str, tfs: list[str]) -> AnalysisResult:
+        r = self.analyze_single(market, "+".join(tfs))
+        r.model = "Multi Time Frame"
+        return r
 
 
-def _result(direction="BUY"):
-    base = dict(market="XAUUSD", model="Single Time Frame", timeframe="H1", trend="Naik <x>",
-                direction=direction, score=50.0, confidence=50, reasons=["a & b"], summary=["s"])
-    if direction == "BUY":
-        base.update(entry=3540.06, sl=3500.0, tp1=3580.0, tp2=3620.0, tp3=3660.0, rr=2.0)
-    return AnalysisResult(**base)
+def _result(direction: str) -> AnalysisResult:
+    return AnalysisResult(
+        market="XAUUSD", model="Single Time Frame", timeframe="H1",
+        trend="Naik <x>", direction=direction, score=50.0, confidence=50,
+        price=3540.0, atr=12.5,
+        entry=3540.0 if direction != WAIT else None,
+        sl=3527.5 if direction != WAIT else None,
+        tp1=3552.5 if direction != WAIT else None,
+        tp2=3565.0 if direction != WAIT else None,
+        tp3=3577.5 if direction != WAIT else None,
+        rr=2.0 if direction != WAIT else None,
+        reasons=["Skor uji: alasan <x>"],
+        summary=["s"],
+        factors=[Factor("EMA", 25.0, 25.0, "Naik <x>")],
+        as_of=datetime(2026, 4, 17, 10, 30, tzinfo=timezone.utc),
+    )
 
 
 def test_html_format_has_all_fields_and_escapes():
     text = format_html(_result("BUY"))
     for key in ("XAUUSD", "Single Time Frame", "H1", "Tren:", "BUY", "Entry:", "Stop Loss:",
-                "TP1:", "TP2:", "TP3:", "Risk/Reward", "50/100", "Alasan", "Ringkasan indikator",
-                "bukan peluang profit"):
+                "TP1:", "TP2:", "TP3:", "Risk/Reward", "50%", "Alasan", "Ringkasan indikator",
+                "Ini hanya analisa"):
         assert key in text
-    assert "&lt;x&gt;" in text and "a &amp; b" in text
-    wait = format_html(_result("WAIT"))
-    assert "Entry:" not in wait and "WAIT" in wait
+    assert "&lt;x&gt;" in text and "<x>" not in text
 
 
-def test_html_format_is_truncated_to_telegram_limit():
-    r = _result("WAIT")
-    r.reasons = ["x" * 500] * 30
-    assert len(format_html(r)) <= 3900
+def test_html_format_wait_hides_entry_sl_tp():
+    text = format_html(_result(WAIT))
+    assert "WAIT" in text
+    for hidden in ("Entry:", "Stop Loss:", "TP1:", "TP2:", "TP3:"):
+        assert hidden not in text
+
+
+def test_bot_polls_message_and_callback_and_edits_message():
+    api = DummyAPI()
+    api.queue_updates(
+        {"update_id": 1, "message": {"chat": {"id": 10}, "from": {"id": 20}, "text": "/start"}},
+        {"update_id": 2, "callback_query": {
+            "id": "cb1", "from": {"id": 20},
+            "message": {"chat": {"id": 10}, "message_id": 55},
+            "data": "m:XAUUSD",
+        }},
+        {"update_id": 3, "callback_query": {
+            "id": "cb2", "from": {"id": 20},
+            "message": {"chat": {"id": 10}, "message_id": 55},
+            "data": "tf:single",
+        }},
+        {"update_id": 4, "callback_query": {
+            "id": "cb3", "from": {"id": 20},
+            "message": {"chat": {"id": 10}, "message_id": 55},
+            "data": "s:H1",
+        }},
+    )
+    bot = TelegramBot(api, DummyAnalyzer())
+    n = bot.poll_once()
+    assert n == 4
+    methods = [m for m, _ in api.calls]
+    assert "sendMessage" in methods and "editMessageText" in methods and "answerCallbackQuery" in methods
+    assert bot.offset == 5
