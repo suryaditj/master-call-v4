@@ -10,15 +10,20 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from analysis.models import AnalysisResult
-from analysis.multi_tf import combine
+from analysis.multi_tf import (
+    MULTI_3TF_PRESETS,
+    ONE_CLICK_2TF_KEY,
+    ONE_CLICK_2TF_PRESETS,
+    combine,
+    format_one_click_2tf_html,
+)
 from analysis.scoring import ANALYSIS_CANDLES, analyze_candles
 from config import SYMBOLS
 from exness.candles import TF_SECONDS, fetch_candles
 
-SINGLE_TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1")
+SINGLE_TIMEFRAMES = ("M5", "M15", "M30", "H1", "H4", "D1", "W1")
 MULTI_PRESETS: dict[str, tuple[str, ...]] = {
-    "M1+M5+M15": ("M1", "M5", "M15"),
-    "M30+H1+H4": ("M30", "H1", "H4"),
+    **MULTI_3TF_PRESETS,
 }
 PAUSE_BETWEEN_FETCHES = 0.5  # detik, mengurangi risiko rate limit
 
@@ -56,16 +61,33 @@ def analyze_single(client: Any, market: str, timeframe: str) -> AnalysisResult:
 
 
 def analyze_multi(client: Any, market: str, timeframes: Sequence[str]) -> AnalysisResult:
-    tfs = sorted(timeframes, key=lambda t: TF_SECONDS[t])  # kecil -> besar
+    """Menjalankan analisis sesuai urutan TF kiri ke kanan (bias -> konfirmasi -> eksekusi)."""
+    tfs = list(timeframes)
     results = []
     for i, tf in enumerate(tfs):
         if i:
             time.sleep(PAUSE_BETWEEN_FETCHES)
         results.append(analyze_single(client, market, tf))
     combined = combine(market, results)
-    # Peringatan data lama ikut ke hasil gabungan bila salah satu timeframe lama.
     for r in results:
         if r.reasons and r.reasons[0].startswith("Perhatian: candle terakhir"):
             combined.reasons.insert(0, r.reasons[0])
             break
     return combined
+
+
+def analyze_one_click_2tf(client: Any, market: str) -> tuple[list[AnalysisResult], str]:
+    """Menjalankan seluruh preset 2 TF (H4+M15, H1+M5, M30+M5) dan mengembalikan hasil + teks HTML."""
+    combined_list: list[AnalysisResult] = []
+    first_fetch = True
+    for preset_name, tfs in ONE_CLICK_2TF_PRESETS.items():
+        pair_results: list[AnalysisResult] = []
+        for tf in tfs:
+            if not first_fetch:
+                time.sleep(PAUSE_BETWEEN_FETCHES)
+            first_fetch = False
+            pair_results.append(analyze_single(client, market, tf))
+        res = combine(market, pair_results)
+        res.timeframe = preset_name
+        combined_list.append(res)
+    return combined_list, format_one_click_2tf_html(market, combined_list)
