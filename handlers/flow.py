@@ -13,7 +13,8 @@ from datetime import datetime, timezone
 from html import escape
 from typing import Any, Callable, Collection
 
-from analysis.service import MULTI_PRESETS, SINGLE_TIMEFRAMES
+from analysis.multi_tf import MULTI_3TF_PRESETS, ONE_CLICK_2TF_KEY
+from analysis.service import SINGLE_TIMEFRAMES
 from config import SYMBOLS
 from exness.errors import (
     ExnessAuthError, ExnessError, ExnessNetworkError, ExnessRequestError, InsufficientDataError,
@@ -29,6 +30,8 @@ log = logging.getLogger(__name__)
 STALE_ALERT = "Tombol ini sudah tidak berlaku."
 STALE_TEXT = "Menu ini sudah kedaluwarsa. Silakan kembali ke Menu Utama."
 LOADING_TEXT = "⏳ Mengambil data terbaru dari Exness dan menghitung analisis..."
+
+VALID_MULTI_KEYS = frozenset({ONE_CLICK_2TF_KEY, *MULTI_3TF_PRESETS.keys()})
 
 
 class Flow:
@@ -96,7 +99,7 @@ class Flow:
         elif a == "tf" and s.market and s.model == "single" and arg in SINGLE_TIMEFRAMES:
             s.timeframe = arg
             self._run_analysis(chat_id, s)
-        elif a == "mt" and s.market and s.model == "multi" and arg in MULTI_PRESETS:
+        elif a == "mt" and s.market and s.model == "multi" and arg in VALID_MULTI_KEYS:
             s.timeframe = arg
             self._run_analysis(chat_id, s)
         elif a == "rf" and s.market and s.model and s.timeframe:
@@ -127,9 +130,12 @@ class Flow:
         try:
             if s.model == "single":
                 result = self.analyzer.single(s.market, s.timeframe)
+                text = format_html(result)
+            elif s.timeframe == ONE_CLICK_2TF_KEY and hasattr(self.analyzer, "one_click_2tf"):
+                _, text = self.analyzer.one_click_2tf(s.market)
             else:
                 result = self.analyzer.multi(s.market, s.timeframe)
-            text = format_html(result)
+                text = format_html(result)
         except InsufficientDataError as exc:
             text = f"⚠️ Data tidak cukup: {escape(str(exc))}\nTidak ada sinyal yang dibuat."
         except ExnessAuthError:
