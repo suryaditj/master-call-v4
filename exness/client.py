@@ -34,6 +34,13 @@ log = logging.getLogger(__name__)
 
 AUTH_CODES = {1000, 1001, 1002}
 
+# Nilai pilihan dari dokumentasi resmi (dropdown halaman "Get candle history").
+TIMEFRAMES = (
+    "S1", "S5", "S15", "M1", "M3", "M5", "M10", "M15", "M30",
+    "H1", "H2", "H4", "D1", "W1", "MN",
+)
+PRICE_TYPES = ("bid", "ask", "both")
+
 
 def build_path(path: str, params: dict[str, Any] | None = None) -> str:
     """Susun path + query. String ini yang ditandatangani DAN dikirim."""
@@ -120,6 +127,46 @@ class ExnessClient:
     def get_limits(self) -> Any:
         path = f"/v1/configuration/accounts/{self._config.account_id}/limits"
         return self._signed_get(self.access_point(), path)
+
+    def get_candles_raw(
+        self,
+        instrument: str,
+        timeframe: str,
+        from_: str,
+        *,
+        count: int | None = None,
+        to: str | None = None,
+        price_type: str | None = None,
+    ) -> Any:
+        """GET /v1/market-data/accounts/{account_id}/candles (respons mentah).
+
+        Parameter query dari dokumentasi resmi: instrument, timeframe, from
+        (wajib); price_type, to, count (opsional; count tidak boleh bersama to).
+        Format nilai `from`/`to` dan struktur respons diverifikasi lewat
+        scripts/check_candles.py sebelum parser ditulis.
+        """
+        if timeframe not in TIMEFRAMES:
+            raise ValueError(f"Timeframe tidak dikenal: {timeframe!r}")
+        if price_type is not None and price_type not in PRICE_TYPES:
+            raise ValueError(f"price_type tidak dikenal: {price_type!r}")
+        if to is not None and count is not None:
+            raise ValueError("'count' tidak boleh dipakai bersama 'to'.")
+        if to is None and count is None:
+            raise ValueError("Isi salah satu: 'count' atau 'to'.")
+
+        params: dict[str, Any] = {
+            "instrument": instrument,
+            "timeframe": timeframe,
+            "from": from_,
+        }
+        if price_type is not None:
+            params["price_type"] = price_type
+        if to is not None:
+            params["to"] = to
+        if count is not None:
+            params["count"] = count
+        path = f"/v1/market-data/accounts/{self._config.account_id}/candles"
+        return self._signed_get(self.access_point(), build_path(path, params))
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """GET bertanda tangan ke Access Point. Hanya GET, tidak ada metode tulis."""
