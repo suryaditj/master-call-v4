@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 STALE_ALERT = "Tombol ini sudah tidak berlaku."
 STALE_TEXT = "Menu ini sudah kedaluwarsa. Silakan kembali ke Menu Utama."
-LOADING_TEXT = "⏳ Mengambil data terbaru dari Exness dan menghitung analisis..."
+LOADING_TEXT = "⏳ Sedang menganalisa...."
 
 VALID_MULTI_KEYS = frozenset({ONE_CLICK_2TF_KEY, *MULTI_3TF_PRESETS.keys()})
 
