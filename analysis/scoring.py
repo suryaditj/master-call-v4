@@ -1,8 +1,4 @@
-"""Sistem skor teknikal untuk satu timeframe.
-
-Setiap faktor memberi skor antara -bobot dan +bobot (positif = bullish).
-Jumlah bobot = 100, jadi skor total berada di -100..+100.
-"""
+"""Sistem skor teknikal untuk satu timeframe."""
 from __future__ import annotations
 
 from typing import Sequence
@@ -14,10 +10,10 @@ from indicators import atr, detect_patterns, ema, nearest_levels, rsi, sma
 
 MIN_CANDLES = 100          # minimum agar EMA50, RSI, ATR, dan S/R layak
 ANALYSIS_CANDLES = 150     # jumlah candle yang diminta untuk analisis
-SIGNAL_THRESHOLD = 35.0    # |skor| minimal untuk BUY/SELL
+SIGNAL_THRESHOLD = 55.0    # minimal skor analisa (di atas 50%) untuk BUY/SELL
 ER_WINDOW = 30             # jendela efisiensi tren (candle)
 ER_MIN = 0.20              # di bawah ini = pasar bolak-balik -> WAIT
-SL_ATR_MULT = 1.0          # jarak SL = 1.0 x ATR (lebih rapat dari 1.5 x ATR)
+SL_ATR_MULT = 1.0          # jarak SL = 1.0 x ATR
 TP_R_MULTIPLES = (1.0, 2.0, 3.0)
 
 W_ALIGN, W_SLOPE, W_RSI, W_MOM, W_VOL, W_PATTERN, W_SR = 25, 10, 20, 15, 10, 10, 10
@@ -120,7 +116,7 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
         f"harga bergerak {mom:+.2f} ATR dalam 10 candle",
     ))
 
-    # 5. Volume (volume candle terakhir vs rata-rata 20)
+    # 5. Volume
     vs = vol_sma[-1]
     ratio = (vols[-1] / vs) if vs and vs > 0 else 1.0
     body_dir = _sgn(candles[-1].close - candles[-1].open)
@@ -157,7 +153,6 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
 
     total = sum(f.score for f in factors)
 
-    # Keputusan: skor harus melewati ambang DAN susunan EMA tidak berlawanan.
     if total >= SIGNAL_THRESHOLD and align > 0:
         direction = BUY
     elif total <= -SIGNAL_THRESHOLD and align < 0:
@@ -165,7 +160,6 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
     else:
         direction = WAIT
 
-    # Filter pasar bolak-balik: efisiensi tren Kaufman atas ER_WINDOW candle.
     path = sum(abs(closes[i] - closes[i - 1]) for i in range(len(closes) - ER_WINDOW, len(closes)))
     er = abs(closes[-1] - closes[-1 - ER_WINDOW]) / path if path > 0 else 0.0
     choppy = er < ER_MIN
