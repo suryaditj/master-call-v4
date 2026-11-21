@@ -26,3 +26,11 @@ class ExnessNetworkError(ExnessError):
 
 class ExnessKeyError(ExnessError):
     """Format private key tidak dikenali."""
+
+
+class CandleDataError(ExnessError):
+    """Respons candle tidak sesuai skema yang diharapkan."""
+
+
+class InsufficientDataError(ExnessError):
+    """Jumlah candle yang tersedia kurang untuk analisis."""
