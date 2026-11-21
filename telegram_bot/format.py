@@ -1,6 +1,7 @@
 """Formatter pesan HTML Telegram untuk hasil analisis (Single TF & Multi TF)."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Sequence
@@ -19,11 +20,24 @@ def _market_icon(market: str) -> str:
     return "📈"
 
 
-def _dir_arrow(direction: str) -> str:
-    d = direction.upper()
-    if d in (BUY, "NAIK", "UP", "BULLISH"):
+def _clean_trend_label(trend: str, direction: str) -> str:
+    cleaned = re.sub(r"\s*/\s*transisi", "", trend or "", flags=re.IGNORECASE).strip()
+    if not cleaned:
+        d = (direction or "").upper()
+        if d in (BUY, "NAIK", "UP", "BULLISH"):
+            return "Naik"
+        if d in (SELL, "TURUN", "DOWN", "BEARISH"):
+            return "Turun"
+        return "Sideways"
+    return cleaned
+
+
+def _dir_arrow(direction: str, trend_label: str = "") -> str:
+    d = (direction or "").upper()
+    t = (trend_label or "").lower()
+    if d in (BUY, "NAIK", "UP", "BULLISH") or "naik" in t or "bull" in t or "up" in t:
         return "⬆️"
-    if d in (SELL, "TURUN", "DOWN", "BEARISH"):
+    if d in (SELL, "TURUN", "DOWN", "BEARISH") or "turun" in t or "bear" in t or "down" in t:
         return "⬇️"
     return "↔️"
 
@@ -46,7 +60,7 @@ def _pip_size(market: str) -> float:
 
 
 def _fmt_pip_diff(a: float | None, b: float | None, market: str) -> str:
-    """Selisih jarak dalam pip bulat tanpa koma (contoh: 405pip)."""
+    """Selisih jarak dalam pip bulat tanpa koma (contoh: 56pip)."""
     if a is None or b is None:
         return "0pip"
     pip_val = _pip_size(market)
@@ -65,10 +79,13 @@ def _format_trend_line(res: AnalysisResult) -> str:
     if res.sub_results:
         parts: list[str] = []
         for sub in res.sub_results:
-            arrow = _dir_arrow(sub.direction)
-            parts.append(f"{escape(sub.timeframe)}: {escape(sub.trend)} {arrow}")
+            label = _clean_trend_label(sub.trend, sub.direction)
+            arrow = _dir_arrow(sub.direction, label)
+            parts.append(f"{escape(sub.timeframe)}: {escape(label)} {arrow}")
         return "Tren: " + " • ".join(parts)
-    return f"Tren: {escape(res.trend)} {_dir_arrow(res.direction)}"
+    label = _clean_trend_label(res.trend, res.direction)
+    arrow = _dir_arrow(res.direction, label)
+    return f"Tren: {escape(label)} {arrow}"
 
 
 def _format_reasons(res: AnalysisResult) -> list[str]:
@@ -77,29 +94,82 @@ def _format_reasons(res: AnalysisResult) -> list[str]:
         lines.append("• Belum memenuhi syarat")
         if res.sub_results:
             for sub in res.sub_results:
-                lines.append(f"• {escape(sub.timeframe)}: {escape(sub.trend)} {_dir_arrow(sub.direction)}")
+                label = _clean_trend_label(sub.trend, sub.direction)
+                arrow = _dir_arrow(sub.direction, label)
+                lines.append(f"• {escape(sub.timeframe)}: {escape(label)} {arrow}")
         else:
-            lines.append(f"• {escape(res.timeframe)}: {escape(res.trend)} {_dir_arrow(res.direction)}")
+            label = _clean_trend_label(res.trend, res.direction)
+            arrow = _dir_arrow(res.direction, label)
+            lines.append(f"• {escape(res.timeframe)}: {escape(label)} {arrow}")
         return lines
 
     if res.reasons:
         for r in res.reasons:
             if r.startswith("Arah:") or r.startswith("Level dihitung"):
                 continue
-            clean = r.replace(" • ", " • ")
-            lines.append(f"• {escape(clean)}")
+            lines.append(f"• {escape(r)}")
     else:
         lines.append(f"• Searah sinyal {res.direction} pada {escape(res.timeframe)}")
     return lines
 
 
+def _extract_num(pattern: str, text: str) -> float | None:
+    m = re.search(pattern, text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    raw = m.group(1).replace(",", "")
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _build_beginner_summary(res: AnalysisResult) -> list[str]:
+    """Menghasilkan tepat 2 poin bahasa pemula yang mudah dipahami."""
+    joined = " | ".join(res.summary or [])
+    price = _extract_num(r"Harga\s+([\d,]+(?:\.\d+)?)", joined)
+    ema21 = _extract_num(r"EMA21\s+([\d,]+(?:\.\d+)?)", joined)
+    ema50 = _extract_num(r"EMA50\s+([\d,]+(?:\.\d+)?)", joined)
+    rsi = _extract_num(r"RSI14\s+([\d,]+(?:\.\d+)?)", joined)
+
+    # Poin 1: posisi harga terhadap rata-rata pergerakan (EMA) & arah pergerakan
+    ref_ema = ema50 if ema50 is not None else ema21
+    if price is not None and ref_ema is not None:
+        if price > ref_ema:
+            p1 = "Harga masih berada di atas area rata-rata acuan, jadi kecenderungan arah masih punya peluang naik meski bisa tarik-ulur."
+        elif price < ref_ema:
+            p1 = "Harga masih berada di bawah area rata-rata acuan, jadi tekanan jual masih perlu diwaspadai sebelum ambil posisi."
+        else:
+            p1 = "Harga menempel di area rata-rata acuan, menandakan pasar sedang mencari arah baru."
+    elif res.direction == BUY:
+        p1 = "Pergerakan mulai menunjukkan dorongan naik, tapi tetap perlu konfirmasi agar tidak terjebak pantulan palsu."
+    elif res.direction == SELL:
+        p1 = "Pergerakan mulai menunjukkan tekanan turun, namun perhatikan area pantulan terdekat sebelum masuk posisi."
+    else:
+        p1 = "Pergerakan antar timeframe belum kompak, sehingga arah besar masih belum jelas untuk langsung entry."
+
+    # Poin 2: kondisi tenaga pasar (RSI) & kesiapan peluang
+    if rsi is not None:
+        if rsi >= 70:
+            p2 = "Tenaga beli sudah cukup tinggi (jenuh beli), jadi rawan koreksi atau melambat dalam jangka pendek."
+        elif rsi <= 30:
+            p2 = "Tenaga jual sudah cukup dalam (jenuh jual), jadi ada peluang pantulan balik sewaktu-waktu."
+        elif res.direction not in (BUY, SELL):
+            p2 = "Tenaga pasar masih berada di zona tengah dan belum cukup kuat, paling aman bersabar menunggu momen yang lebih jelas."
+        else:
+            p2 = "Tenaga pergerakan masih wajar dan belum ekstrem, tetap pasang batas rugi dan atur ukuran lot dengan aman."
+    elif res.direction not in (BUY, SELL):
+        p2 = "Kondisi pasar belum memenuhi syarat masuk aman, lebih baik tunggu konfirmasi lanjutan daripada terburu-buru."
+    else:
+        p2 = "Pastikan tetap memakai batas rugi (SL) yang disiplin karena pergerakan pasar bisa berubah cepat."
+
+    return [p1, p2]
+
+
 def _format_summary(res: AnalysisResult) -> list[str]:
     lines = ["📋 <b>Ringkasan indikator</b>"]
-    if res.summary:
-        for item in res.summary:
-            lines.append(f"• {escape(item)}")
-    else:
-        lines.append("• Pergerakan harga dan momentum masih dipantau sesuai kondisi pasar saat ini.")
+    for point in _build_beginner_summary(res)[:2]:
+        lines.append(f"• {escape(point)}")
     return lines
 
 
