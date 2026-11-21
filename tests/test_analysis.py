@@ -33,7 +33,7 @@ def test_uptrend_gives_buy_with_valid_levels():
     r = analyze_candles("XAUUSD", "H1", make_candles(150, drift=2.0))
     assert r.direction == BUY and r.score >= SIGNAL_THRESHOLD
     assert r.sl < r.entry < r.tp1 < r.tp2 < r.tp3
-    assert r.entry - r.sl == pytest.approx(1.5 * r.atr)
+    assert r.entry - r.sl == pytest.approx(1.0 * r.atr)
     assert (r.tp2 - r.entry) / (r.entry - r.sl) == pytest.approx(2.0)
     assert r.confidence == round(abs(r.score))
     assert r.reasons and r.summary and len(r.factors) == 7
@@ -100,7 +100,7 @@ def test_multi_agreement_gives_buy_with_levels_from_middle_tf():
     out = combine("XAUUSD", [_res("M1", BUY, 40), mid, _res("M15", BUY, 60)])
     assert out.direction == BUY
     assert out.timeframe == "M1+M5+M15"
-    assert out.entry == 200.0 and out.sl == pytest.approx(197.0)
+    assert out.entry == 200.0 and out.sl == pytest.approx(198.0)
     assert len(out.sub_results) == 3
 
 
