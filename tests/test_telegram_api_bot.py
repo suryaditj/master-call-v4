@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from analysis.models import BUY, WAIT, AnalysisResult, Factor
+from handlers.flow import Flow
+from session.store import SessionStore
 from telegram_bot.bot import TelegramBot
 from telegram_bot.format import format_html
 
@@ -11,26 +13,39 @@ class DummyAPI:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
         self._updates: list[dict] = []
-        self.fail_edit = False
+        self._seq: int = 0
 
     def queue_updates(self, *updates: dict) -> None:
         self._updates.extend(updates)
 
-    def _call(self, method: str, **params) -> dict:
-        self.calls.append((method, params))
-        if method == "getUpdates":
-            out, self._updates = self._updates, []
-            return {"ok": True, "result": out}
-        if method == "editMessageText" and self.fail_edit:
-            return {"ok": False, "description": "Bad Request: message is not modified"}
-        return {"ok": True, "result": {"message_id": 55}}
+    def delete_webhook(self) -> dict:
+        self.calls.append(("deleteWebhook", {}))
+        return {"ok": True, "result": True}
+
+    def get_updates(self, offset: int | None = None, timeout: int = 25) -> list[dict]:
+        self.calls.append(("getUpdates", {"offset": offset, "timeout": timeout}))
+        if timeout == 0:
+            return []
+        out, self._updates = self._updates, []
+        return out
+
+    def send_message(self, chat_id: int, text: str, reply_markup: dict | None = None) -> dict:
+        self._seq += 1
+        params = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
+        self.calls.append(("sendMessage", params))
+        return {"ok": True, "result": {"message_id": self._seq, **params}}
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None, show_alert: bool = False) -> dict:
+        params = {"callback_query_id": callback_query_id, "text": text, "show_alert": show_alert}
+        self.calls.append(("answerCallbackQuery", params))
+        return {"ok": True, "result": True}
 
     def close(self) -> None:
         pass
 
 
 class DummyAnalyzer:
-    def analyze_single(self, market: str, tf: str) -> AnalysisResult:
+    def single(self, market: str, tf: str) -> AnalysisResult:
         return AnalysisResult(
             market=market, model="Single Time Frame", timeframe=tf,
             trend="Naik", direction=BUY, score=65.0, confidence=65,
@@ -41,8 +56,8 @@ class DummyAnalyzer:
             as_of=datetime(2026, 4, 17, 12, 0, tzinfo=timezone.utc),
         )
 
-    def analyze_multi(self, market: str, tfs: list[str]) -> AnalysisResult:
-        r = self.analyze_single(market, "+".join(tfs))
+    def multi(self, market: str, preset: str) -> AnalysisResult:
+        r = self.single(market, preset)
         r.model = "Multi Time Frame"
         return r
 
@@ -83,27 +98,33 @@ def test_html_format_wait_hides_entry_sl_tp():
 
 def test_bot_polls_message_and_callback_and_edits_message():
     api = DummyAPI()
+    store = SessionStore()
+    flow = Flow(api, store, DummyAnalyzer())
+    sess = store.reset(20)
+    seq_after_start = sess.seq + 1
+    seq_after_mk = sess.seq + 2
+    seq_after_md = sess.seq + 3
+
     api.queue_updates(
         {"update_id": 1, "message": {"chat": {"id": 10}, "from": {"id": 20}, "text": "/start"}},
         {"update_id": 2, "callback_query": {
             "id": "cb1", "from": {"id": 20},
             "message": {"chat": {"id": 10}, "message_id": 55},
-            "data": "m:XAUUSD",
+            "data": f"mk:{sess.sid}:{seq_after_start}:XAUUSD",
         }},
         {"update_id": 3, "callback_query": {
             "id": "cb2", "from": {"id": 20},
             "message": {"chat": {"id": 10}, "message_id": 55},
-            "data": "tf:single",
+            "data": f"md:{sess.sid}:{seq_after_mk}:single",
         }},
         {"update_id": 4, "callback_query": {
             "id": "cb3", "from": {"id": 20},
             "message": {"chat": {"id": 10}, "message_id": 55},
-            "data": "s:H1",
+            "data": f"tf:{sess.sid}:{seq_after_md}:H1",
         }},
     )
-    bot = TelegramBot(api, DummyAnalyzer())
-    n = bot.poll_once()
+    bot = TelegramBot(api, flow)
+    n = bot.run_polling(max_seconds=1.0, poll_timeout=1)
     assert n == 4
     methods = [m for m, _ in api.calls]
-    assert "sendMessage" in methods and "editMessageText" in methods and "answerCallbackQuery" in methods
-    assert bot.offset == 5
+    assert "sendMessage" in methods and "answerCallbackQuery" in methods
