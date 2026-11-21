@@ -34,3 +34,11 @@ jobs:
           EXN_ACCOUNT_ID: ${{ secrets.EXN_ACCOUNT_ID }}
           EXN_DISCOVERY_BASE_URL: ${{ secrets.EXN_DISCOVERY_BASE_URL }}
         run: python scripts/check_auth.py
+        
+      - name: Check candle endpoint
+        env:
+          EXN_API_KEY: ${{ secrets.EXN_API_KEY }}
+          EXN_PRIVATE_KEY: ${{ secrets.EXN_PRIVATE_KEY }}
+          EXN_ACCOUNT_ID: ${{ secrets.EXN_ACCOUNT_ID }}
+          EXN_DISCOVERY_BASE_URL: ${{ secrets.EXN_DISCOVERY_BASE_URL }}
+        run: python scripts/check_candles.py
