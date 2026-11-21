@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from analysis.service import MULTI_PRESETS, SINGLE_TIMEFRAMES
+from analysis.multi_tf import MULTI_3TF_PRESETS, ONE_CLICK_2TF_KEY
+from analysis.service import SINGLE_TIMEFRAMES
 from config import SYMBOLS
 from keyboards.callbacks import encode
 
@@ -41,7 +42,10 @@ def single_menu(sid: str, seq: int) -> Markup:
 
 
 def multi_menu(sid: str, seq: int) -> Markup:
-    rows = [[_btn(f"MultiTF [{key}]", sid, seq, "mt", key)] for key in MULTI_PRESETS]
+    rows: list[list[dict[str, str]]] = [
+        [_btn("One klik 2 TF", sid, seq, "mt", ONE_CLICK_2TF_KEY)],
+        [_btn(f"3 TF: {key}", sid, seq, "mt", key) for key in MULTI_3TF_PRESETS],
+    ]
     return {"inline_keyboard": rows + [_nav(sid, seq)]}
 
 
