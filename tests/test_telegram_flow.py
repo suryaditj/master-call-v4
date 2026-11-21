@@ -51,6 +51,11 @@ class FakeAnalyzer:
         self.calls.append(("multi", market, preset))
         return self._result("Multi Time Frame", preset, market)
 
+    def one_click_2tf(self, market: str) -> tuple[list[AnalysisResult], str]:
+        self.calls.append(("one_click_2tf", market))
+        items = [self._result("Multi Time Frame", p, market) for p in ("H4+M15", "H1+M5", "M30+M5")]
+        return items, f"<b>One Klik 2 TF • {market}</b>"
+
 
 def buttons(msg: dict) -> list[dict]:
     rm = msg.get("reply_markup")
@@ -112,13 +117,25 @@ def test_full_multi_flow_refresh_and_back_navigation(env):
     press(flow, api.sent[-1], "Multi Time Frame")
     m = api.sent[-1]
     assert "Multi Time Frame" in m["text"]
-    assert "MultiTF [M30+H1+H4]" in labels(m)
-    press(flow, m, "MultiTF [M30+H1+H4]")
-    assert an.calls == [("multi", "BTCUSD", "M30+H1+H4")]
+    assert "One klik 2 TF" in labels(m)
+    assert "3 TF: H4+H1+M15" in labels(m)
+    assert "3 TF: H1+M30+M5" in labels(m)
+    press(flow, m, "3 TF: H4+H1+M15")
+    assert an.calls == [("multi", "BTCUSD", "H4+H1+M15")]
     press(flow, api.sent[-1], "Refresh")
-    assert an.calls[-1] == ("multi", "BTCUSD", "M30+H1+H4")
+    assert an.calls[-1] == ("multi", "BTCUSD", "H4+H1+M15")
     press(flow, api.sent[-1], "Kembali")
-    assert "MultiTF [M30+H1+H4]" in labels(api.sent[-1])
+    assert "3 TF: H4+H1+M15" in labels(api.sent[-1])
+
+
+def test_one_click_2tf_flow(env):
+    api, an, flow, _ = env
+    flow.on_start(CHAT, 77)
+    press(flow, api.sent[-1], "XAUUSD")
+    press(flow, api.sent[-1], "Multi Time Frame")
+    press(flow, api.sent[-1], "One klik 2 TF")
+    assert an.calls == [("one_click_2tf", "XAUUSD")]
+    assert "One Klik 2 TF • XAUUSD" in api.sent[-1]["text"]
 
 
 def test_ganti_market_and_menu_utama(env):
