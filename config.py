@@ -76,3 +76,33 @@ def load_exness_config() -> ExnessConfig:
         discovery_base_url=discovery.rstrip("/") if discovery else None,
         api_base_url=api_base.rstrip("/") if api_base else None,
     )
+
+
+@dataclass(frozen=True)
+class TelegramConfig:
+    token: str = field(repr=False)
+    allowed_user_ids: frozenset[int]
+
+    def __repr__(self) -> str:  # jangan bocorkan token di log
+        return f"TelegramConfig(allowed_user_ids={sorted(self.allowed_user_ids)})"
+
+
+def load_telegram_config() -> TelegramConfig:
+    """Wajib: TELEGRAM_BOT_TOKEN. Opsional: TELEGRAM_ALLOWED_USER_IDS (pisah koma).
+
+    Jika daftar ID diisi, hanya pengguna itu yang boleh memakai bot.
+    """
+    token = _env("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ConfigError("Environment variable belum diisi: TELEGRAM_BOT_TOKEN")
+    raw = _env("TELEGRAM_ALLOWED_USER_IDS") or ""
+    ids: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.add(int(part))
+        except ValueError:
+            raise ConfigError("TELEGRAM_ALLOWED_USER_IDS harus berisi angka dipisah koma.") from None
+    return TelegramConfig(token=token, allowed_user_ids=frozenset(ids))
