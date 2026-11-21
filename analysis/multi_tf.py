@@ -1,12 +1,4 @@
-"""Penggabungan beberapa timeframe menjadi satu kesimpulan.
-
-Aturan:
-- Timeframe lebih tinggi diberi bobot lebih besar (urutan kecil -> besar = bobot 1, 2, 3).
-- Jika ada timeframe BUY dan SELL sekaligus -> WAIT (konflik dijelaskan).
-- BUY/SELL hanya jika skor gabungan melewati ambang DAN timeframe tertinggi
-  tidak berlawanan arah.
-- Level Entry/SL/TP dihitung dari ATR timeframe tengah.
-"""
+"""Penggabungan beberapa timeframe menjadi satu kesimpulan dengan syarat ketat."""
 from __future__ import annotations
 
 from typing import Sequence
@@ -14,7 +6,8 @@ from typing import Sequence
 from analysis.models import BUY, SELL, WAIT, AnalysisResult
 from analysis.scoring import build_levels
 
-MTF_THRESHOLD = 30.0
+MTF_THRESHOLD = 55.0
+TOP_TF_MIN_SCORE = 40.0
 
 
 def combine(market: str, results: Sequence[AnalysisResult]) -> AnalysisResult:
@@ -26,23 +19,50 @@ def combine(market: str, results: Sequence[AnalysisResult]) -> AnalysisResult:
     dirs = [r.direction for r in results]
     top = results[-1]
 
+    has_bearish_score = any(r.score < 0 for r in results)
+    has_bullish_score = any(r.score > 0 for r in results)
+    aligned_buy_count = sum(1 for r in results if r.direction == BUY)
+    aligned_sell_count = sum(1 for r in results if r.direction == SELL)
+
     reasons: list[str] = []
-    if BUY in dirs and SELL in dirs:
+    if (BUY in dirs and SELL in dirs) or (
+        combined >= MTF_THRESHOLD and has_bearish_score
+    ) or (
+        combined <= -MTF_THRESHOLD and has_bullish_score
+    ):
         direction = WAIT
-        detail = ", ".join(f"{r.timeframe}={r.direction}" for r in results)
+        detail = ", ".join(f"{r.timeframe}={r.direction}({r.score:+.0f})" for r in results)
         reasons.append(f"Konflik arah antar timeframe ({detail}); tidak dipaksakan, hasil WAIT.")
-    elif combined >= MTF_THRESHOLD and top.score > 0 and SELL not in dirs:
+    elif (
+        combined >= MTF_THRESHOLD
+        and top.direction == BUY
+        and top.score >= TOP_TF_MIN_SCORE
+        and aligned_buy_count >= 2
+        and SELL not in dirs
+    ):
         direction = BUY
-        reasons.append(f"Skor gabungan {combined:+.0f} melewati ambang ±{MTF_THRESHOLD:.0f}; "
-                       f"timeframe tertinggi ({top.timeframe}) searah.")
-    elif combined <= -MTF_THRESHOLD and top.score < 0 and BUY not in dirs:
+        reasons.append(
+            f"Skor gabungan {combined:+.0f} melewati ambang ±{MTF_THRESHOLD:.0f}; "
+            f"timeframe tertinggi ({top.timeframe}) searah BUY dan minimal 2 TF terkonfirmasi."
+        )
+    elif (
+        combined <= -MTF_THRESHOLD
+        and top.direction == SELL
+        and top.score <= -TOP_TF_MIN_SCORE
+        and aligned_sell_count >= 2
+        and BUY not in dirs
+    ):
         direction = SELL
-        reasons.append(f"Skor gabungan {combined:+.0f} melewati ambang ±{MTF_THRESHOLD:.0f}; "
-                       f"timeframe tertinggi ({top.timeframe}) searah.")
+        reasons.append(
+            f"Skor gabungan {combined:+.0f} melewati ambang ±{MTF_THRESHOLD:.0f}; "
+            f"timeframe tertinggi ({top.timeframe}) searah SELL dan minimal 2 TF terkonfirmasi."
+        )
     else:
         direction = WAIT
-        reasons.append(f"Skor gabungan {combined:+.0f} belum cukup kuat atau timeframe "
-                       f"tertinggi ({top.timeframe}) belum searah.")
+        reasons.append(
+            f"Syarat ketat MTF belum terpenuhi (skor {combined:+.0f}, ambang ±{MTF_THRESHOLD:.0f}, "
+            f"TF tertinggi {top.timeframe}={top.direction} skor {top.score:+.0f})."
+        )
 
     for r in results:
         reasons.append(f"{r.timeframe}: {r.direction} (skor {r.score:+.0f}, tren {r.trend})")
