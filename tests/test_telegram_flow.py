@@ -112,13 +112,13 @@ def test_full_multi_flow_refresh_and_back_navigation(env):
     press(flow, api.sent[-1], "Multi Time Frame")
     m = api.sent[-1]
     assert "Multi Time Frame" in m["text"]
-    assert "M15+H1+H4" in labels(m)
-    press(flow, m, "M15+H1+H4")
-    assert an.calls == [("multi", "BTCUSD", "M15+H1+H4")]
+    assert "MultiTF [M30+H1+H4]" in labels(m)
+    press(flow, m, "MultiTF [M30+H1+H4]")
+    assert an.calls == [("multi", "BTCUSD", "M30+H1+H4")]
     press(flow, api.sent[-1], "Refresh")
-    assert an.calls[-1] == ("multi", "BTCUSD", "M15+H1+H4")
+    assert an.calls[-1] == ("multi", "BTCUSD", "M30+H1+H4")
     press(flow, api.sent[-1], "Kembali")
-    assert "M15+H1+H4" in labels(api.sent[-1])
+    assert "MultiTF [M30+H1+H4]" in labels(api.sent[-1])
 
 
 def test_ganti_market_and_menu_utama(env):
@@ -147,15 +147,15 @@ def test_unauthorized_user_ignored_when_allowlist_set(env):
     api, _, flow, bot = env
     flow.allowed = frozenset({999})
     update = {"update_id": 10, "message": {"chat": {"id": CHAT}, "from": {"id": 123}, "text": "/start"}}
-    flow_called = False
-    orig = flow.on_start
+    show_called = False
+    orig = flow._show
 
     def spy(*a, **kw):
-        nonlocal flow_called
-        flow_called = True
+        nonlocal show_called
+        show_called = True
         return orig(*a, **kw)
 
-    flow.on_start = spy
+    flow._show = spy
     bot.handle_update(update)
-    assert not flow_called
-    assert api.sent == []
+    assert not show_called
+    assert api.sent[-1]["text"] == "Akses ditolak."
