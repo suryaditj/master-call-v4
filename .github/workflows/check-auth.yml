@@ -1,0 +1,36 @@
+name: Check Exness Auth
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: check-exness-auth
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: python -m pytest -q
+
+      - name: Check Exness authentication
+        env:
+          EXN_API_KEY: ${{ secrets.EXN_API_KEY }}
+          EXN_PRIVATE_KEY: ${{ secrets.EXN_PRIVATE_KEY }}
+          EXN_ACCOUNT_ID: ${{ secrets.EXN_ACCOUNT_ID }}
+          EXN_DISCOVERY_BASE_URL: ${{ secrets.EXN_DISCOVERY_BASE_URL }}
+        run: python scripts/check_auth.py
