@@ -16,6 +16,7 @@ Catatan verifikasi (Tahap 2):
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 from urllib.parse import urlencode
 
@@ -33,6 +34,12 @@ from exness.signing import build_signed_headers, load_private_key
 log = logging.getLogger(__name__)
 
 AUTH_CODES = {1000, 1001, 1002}
+
+# Batas rate limit tidak disebut di dokumentasi; HTTP 429 (kode 3015) diulang
+# dengan jeda bertambah. Tanda tangan dibuat ulang di setiap percobaan.
+RATE_LIMIT_RETRIES = 2
+RATE_LIMIT_WAIT = 3.0
+_sleep = time.sleep
 
 # Nilai pilihan dari dokumentasi resmi (dropdown halaman "Get candle history").
 TIMEFRAMES = (
@@ -61,6 +68,18 @@ class ExnessClient:
 
     # ---- inti HTTP -------------------------------------------------------
     def _signed_get(self, base_url: str, path_with_query: str) -> Any:
+        """GET bertanda tangan; ulangi bila kena rate limit (HTTP 429)."""
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                return self._signed_get_once(base_url, path_with_query)
+            except ExnessRequestError as exc:
+                if exc.status != 429 or attempt == RATE_LIMIT_RETRIES:
+                    raise
+                log.warning("Rate limit Exness, tunggu %.0f detik", RATE_LIMIT_WAIT * (attempt + 1))
+                _sleep(RATE_LIMIT_WAIT * (attempt + 1))
+        raise ExnessError("unreachable")  # pragma: no cover
+
+    def _signed_get_once(self, base_url: str, path_with_query: str) -> Any:
         headers = build_signed_headers(
             api_key=self._config.api_key,
             private_key=self._key,
