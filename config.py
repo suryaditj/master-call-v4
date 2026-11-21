@@ -8,10 +8,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-# Simbol akun Exness (sesuai konfirmasi pengguna).
+# Nama instrumen di API Exness (terbukti lewat scripts/check_candles.py; akhiran "m" ditolak).
 SYMBOLS: dict[str, str] = {
-    "XAUUSD": "XAUUSDm",
-    "BTCUSD": "BTCUSDm",
+    "XAUUSD": "XAUUSD",
+    "BTCUSD": "BTCUSD",
 }
 
 DEFAULT_TIMEOUT_SECONDS = 15
