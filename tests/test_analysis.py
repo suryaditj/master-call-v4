@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from analysis.models import BUY, SELL, WAIT, AnalysisResult
-from analysis.multi_tf import combine
+from analysis.multi_tf import MULTI_3TF_PRESETS, ONE_CLICK_2TF_PRESETS, combine
 from analysis.scoring import SIGNAL_THRESHOLD, analyze_candles
 from exness.candles import Candle
 from exness.errors import InsufficientDataError
@@ -88,18 +88,32 @@ def test_multi_requires_at_least_two_tfs():
 
 
 def test_multi_conflict_gives_wait():
-    out = combine("XAUUSD", [_res("M1", BUY, 60), _res("M5", SELL, -60), _res("M15", BUY, 60)])
+    out = combine("XAUUSD", [_res("H4", BUY, 60), _res("H1", SELL, -60), _res("M15", BUY, 60)])
     assert out.direction == WAIT and out.entry is None
 
 
-def test_multi_agreement_gives_buy_with_levels_from_middle_tf():
-    mid = _res("M5", BUY, 65, price=200.0, atr=2.0)
-    out = combine("XAUUSD", [_res("M1", BUY, 60), mid, _res("M15", BUY, 70)])
+def test_multi_agreement_gives_buy_with_levels_from_last_tf():
+    last = _res("M15", BUY, 70, price=200.0, atr=2.0)
+    out = combine("XAUUSD", [_res("H4", BUY, 60), _res("H1", BUY, 65), last])
     assert out.direction == BUY
-    assert out.timeframe == "M1+M5+M15"
+    assert out.timeframe == "H4+H1+M15"
     assert out.entry == 200.0 and out.sl == pytest.approx(198.0)
 
 
+def test_2tf_requires_full_alignment_and_uses_second_tf_levels():
+    out_aligned = combine("XAUUSD", [_res("H4", BUY, 65), _res("M15", BUY, 75, price=250.0, atr=2.0)])
+    assert out_aligned.direction == BUY
+    assert out_aligned.entry == 250.0 and out_aligned.sl == pytest.approx(248.0)
+
+    out_unaligned = combine("XAUUSD", [_res("H1", BUY, 70), _res("M5", WAIT, 10, price=250.0, atr=2.0)])
+    assert out_unaligned.direction == WAIT and out_unaligned.entry is None
+
+
+def test_presets_match_expected_timeframes():
+    assert list(ONE_CLICK_2TF_PRESETS.keys()) == ["H4+M15", "H1+M5", "M30+M5"]
+    assert list(MULTI_3TF_PRESETS.keys()) == ["H4+H1+M15", "H1+M30+M5"]
+
+
 def test_multi_weak_score_gives_wait():
-    out = combine("XAUUSD", [_res("M1", WAIT, 10), _res("M5", WAIT, 15), _res("M15", WAIT, 5)])
+    out = combine("XAUUSD", [_res("H1", WAIT, 10), _res("M30", WAIT, 15), _res("M5", WAIT, 5)])
     assert out.direction == WAIT
