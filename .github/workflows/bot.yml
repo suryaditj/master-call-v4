@@ -1,0 +1,48 @@
+name: Run Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Lama bot aktif (menit, maks 340)"
+        default: "60"
+
+concurrency:
+  group: master-call-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: python -m pytest -q
+
+      - name: Run bot
+        env:
+          EXN_API_KEY: ${{ secrets.EXN_API_KEY }}
+          EXN_PRIVATE_KEY: ${{ secrets.EXN_PRIVATE_KEY }}
+          EXN_ACCOUNT_ID: ${{ secrets.EXN_ACCOUNT_ID }}
+          EXN_DISCOVERY_BASE_URL: ${{ secrets.EXN_DISCOVERY_BASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALLOWED_USER_IDS: ${{ secrets.TELEGRAM_ALLOWED_USER_IDS }}
+          BOT_MINUTES: ${{ inputs.minutes || '340' }}
+        run: |
+          m="${BOT_MINUTES}"
+          case "$m" in ''|*[!0-9]*) m=60 ;; esac
+          if [ "$m" -gt 340 ]; then m=340; fi
+          export BOT_MAX_RUNTIME_SECONDS=$((m * 60))
+          python main.py
