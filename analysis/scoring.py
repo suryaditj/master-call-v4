@@ -1,4 +1,8 @@
-"""Sistem skor teknikal untuk satu timeframe dengan acuan struktur swing & batas risiko."""
+"""Sistem skor teknikal untuk satu timeframe.
+
+Setiap faktor memberi skor antara -bobot dan +bobot (positif = bullish).
+Jumlah bobot = 100, jadi skor total berada di -100..+100.
+"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -8,19 +12,15 @@ from exness.candles import Candle
 from exness.errors import InsufficientDataError
 from indicators import atr, detect_patterns, ema, nearest_levels, rsi, sma
 
-MIN_CANDLES = 100
-ANALYSIS_CANDLES = 150
-SIGNAL_THRESHOLD = 40.0     # lebih selektif agar tidak mudah memberi sinyal palsu
-ER_WINDOW = 20
-ER_MIN = 0.22               # pasar bolak-balik / sideways -> WAIT
+MIN_CANDLES = 100          # minimum agar EMA50, RSI, ATR, dan S/R layak
+ANALYSIS_CANDLES = 150     # jumlah candle yang diminta untuk analisis
+SIGNAL_THRESHOLD = 35.0    # |skor| minimal untuk BUY/SELL
+ER_WINDOW = 30             # jendela efisiensi tren (candle)
+ER_MIN = 0.20              # di bawah ini = pasar bolak-balik -> WAIT
+SL_ATR_MULT = 1.0          # jarak SL = 1.0 x ATR (lebih rapat dari 1.5 x ATR)
+TP_R_MULTIPLES = (1.0, 2.0, 3.0)
 
-MIN_SL_ATR = 0.60           # batas bawah jarak SL (anti terlalu sempit kena noise)
-MAX_SL_ATR = 1.25           # batas atas jarak SL (anti terlalu lebar)
-SWING_BUFFER_ATR = 0.15     # jarak aman di balik swing high/low
-MAX_ENTRY_STRETCH_ATR = 0.75
-TP_R_MULTIPLES = (1.0, 1.5, 2.0)
-
-W_ALIGN, W_SLOPE, W_RSI, W_MOM, W_VOL, W_PATTERN, W_SR = 25, 13, 12, 18, 10, 8, 14
+W_ALIGN, W_SLOPE, W_RSI, W_MOM, W_VOL, W_PATTERN, W_SR = 25, 10, 20, 15, 10, 10, 10
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -31,87 +31,18 @@ def _sgn(x: float) -> int:
     return (x > 0) - (x < 0)
 
 
-def build_levels(
-    direction: str,
-    price: float,
-    atr_value: float,
-    *,
-    ema_fast: float | None = None,
-    swing_low: float | None = None,
-    swing_high: float | None = None,
-) -> dict[str, float | None]:
-    """Hitung Entry pullback terukur dan SL berbasis struktur swing + batas ATR."""
-    if direction not in (BUY, SELL) or atr_value <= 0 or price <= 0:
+def build_levels(direction: str, price: float, atr_value: float) -> dict[str, float | None]:
+    """Entry = harga terakhir; SL = 1.0 ATR; TP = 1R, 2R, 3R."""
+    if direction not in (BUY, SELL) or atr_value <= 0:
         return {"entry": None, "sl": None, "tp1": None, "tp2": None, "tp3": None, "rr": None}
-
-    min_risk = MIN_SL_ATR * atr_value
-    max_risk = MAX_SL_ATR * atr_value
-    buf = SWING_BUFFER_ATR * atr_value
-
-    if direction == BUY:
-        # Target entry: kompromi antara harga sekarang dan EMA cepat (jika tersedia).
-        if ema_fast is not None and ema_fast < price:
-            raw_entry = 0.5 * (price + ema_fast)
-            # Jangan terlalu jauh dari harga pasar saat ini
-            entry = max(raw_entry, price - MAX_ENTRY_STRETCH_ATR * atr_value)
-        else:
-            entry = price - 0.20 * atr_value
-
-        # Kandidat SL dari swing low terdekat di bawah entry
-        if swing_low is not None and swing_low < entry:
-            sl = swing_low - buf
-        else:
-            sl = entry - 0.85 * atr_value
-
-        risk = entry - sl
-        if risk < min_risk:
-            sl = entry - min_risk
-            risk = min_risk
-        elif risk > max_risk:
-            sl = entry - max_risk
-            risk = max_risk
-
-        if sl >= entry:
-            return {"entry": None, "sl": None, "tp1": None, "tp2": None, "tp3": None, "rr": None}
-
-        return {
-            "entry": entry,
-            "sl": sl,
-            "tp1": entry + risk * TP_R_MULTIPLES[0],
-            "tp2": entry + risk * TP_R_MULTIPLES[1],
-            "tp3": entry + risk * TP_R_MULTIPLES[2],
-            "rr": TP_R_MULTIPLES[1],
-        }
-
-    # direction == SELL
-    if ema_fast is not None and ema_fast > price:
-        raw_entry = 0.5 * (price + ema_fast)
-        entry = min(raw_entry, price + MAX_ENTRY_STRETCH_ATR * atr_value)
-    else:
-        entry = price + 0.20 * atr_value
-
-    if swing_high is not None and swing_high > entry:
-        sl = swing_high + buf
-    else:
-        sl = entry + 0.85 * atr_value
-
-    risk = sl - entry
-    if risk < min_risk:
-        sl = entry + min_risk
-        risk = min_risk
-    elif risk > max_risk:
-        sl = entry + max_risk
-        risk = max_risk
-
-    if sl <= entry:
-        return {"entry": None, "sl": None, "tp1": None, "tp2": None, "tp3": None, "rr": None}
-
+    risk = SL_ATR_MULT * atr_value
+    sign = 1 if direction == BUY else -1
     return {
-        "entry": entry,
-        "sl": sl,
-        "tp1": entry - risk * TP_R_MULTIPLES[0],
-        "tp2": entry - risk * TP_R_MULTIPLES[1],
-        "tp3": entry - risk * TP_R_MULTIPLES[2],
+        "entry": price,
+        "sl": price - sign * risk,
+        "tp1": price + sign * risk * TP_R_MULTIPLES[0],
+        "tp2": price + sign * risk * TP_R_MULTIPLES[1],
+        "tp3": price + sign * risk * TP_R_MULTIPLES[2],
         "rr": TP_R_MULTIPLES[1],
     }
 
@@ -166,31 +97,30 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
     # 2. Kemiringan EMA 21 (5 candle) dalam satuan ATR
     slope = (e21[-1] - e21[-6]) / a
     factors.append(Factor(
-        "Kemiringan EMA21", W_SLOPE * _clamp(slope / 0.45, -1, 1), W_SLOPE,
+        "Kemiringan EMA21", W_SLOPE * _clamp(slope / 0.5, -1, 1), W_SLOPE,
         f"EMA21 bergerak {slope:+.2f} ATR dalam 5 candle",
     ))
 
-    # 3. RSI 14 (hindari mendorong sinyal saat sudah jenuh ekstrem)
-    if r > 75:
-        s = W_RSI * 0.25
+    # 3. RSI 14
+    if r >= 70:
+        s = W_RSI * 0.5
     elif r >= 50:
-        s = W_RSI * min((r - 50) / 25, 1.0)
-    elif r >= 25:
-        s = -W_RSI * min((50 - r) / 25, 1.0)
+        s = W_RSI * (r - 50) / 20
+    elif r > 30:
+        s = -W_RSI * (50 - r) / 20
     else:
-        s = -W_RSI * 0.25
-    zone = " (jenuh beli ekstrem)" if r > 75 else " (jenuh jual ekstrem)" if r < 25 else ""
+        s = -W_RSI * 0.5
+    zone = " (jenuh beli)" if r >= 70 else " (jenuh jual)" if r <= 30 else ""
     factors.append(Factor("RSI 14", s, W_RSI, f"RSI {r:.1f}{zone}"))
 
-    # 4. Momentum harga 8 candle terakhir dalam satuan ATR
-    lookback_mom = min(8, len(closes) - 1)
-    mom = (closes[-1] - closes[-1 - lookback_mom]) / a
+    # 4. Momentum harga 10 candle dalam satuan ATR
+    mom = (closes[-1] - closes[-11]) / a
     factors.append(Factor(
-        "Momentum", W_MOM * _clamp(mom / 2.2, -1, 1), W_MOM,
-        f"harga bergerak {mom:+.2f} ATR dalam {lookback_mom} candle",
+        "Momentum", W_MOM * _clamp(mom / 3, -1, 1), W_MOM,
+        f"harga bergerak {mom:+.2f} ATR dalam 10 candle",
     ))
 
-    # 5. Volume
+    # 5. Volume (volume candle terakhir vs rata-rata 20)
     vs = vol_sma[-1]
     ratio = (vols[-1] / vs) if vs and vs > 0 else 1.0
     body_dir = _sgn(candles[-1].close - candles[-1].open)
@@ -206,20 +136,20 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
     names = ", ".join(p.name for p in pats) or "tidak ada pola"
     factors.append(Factor("Pola candle", _clamp(pscore, -W_PATTERN, W_PATTERN), W_PATTERN, names))
 
-    # 7. Support / Resistance berbasis swing terdekat
+    # 7. Kedekatan support/resistance (dalam satuan ATR)
     support, resistance = nearest_levels(price, highs, lows, k=3, lookback=100)
     sr = 0.0
     parts = []
     if resistance is not None:
         d = (resistance - price) / a
         parts.append(f"resistance {_fmt(resistance)} ({d:.1f} ATR)")
-        if d < 0.8:
-            sr -= W_SR * (1 - d / 0.8)
+        if d < 1:
+            sr -= W_SR * (1 - d)
     if support is not None:
         d = (price - support) / a
         parts.append(f"support {_fmt(support)} ({d:.1f} ATR)")
-        if d < 0.8:
-            sr += W_SR * (1 - d / 0.8)
+        if d < 1:
+            sr += W_SR * (1 - d)
     factors.append(Factor(
         "Support/Resistance", _clamp(sr, -W_SR, W_SR), W_SR,
         "; ".join(parts) or "tidak ada level terdeteksi",
@@ -227,6 +157,7 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
 
     total = sum(f.score for f in factors)
 
+    # Keputusan: skor harus melewati ambang DAN susunan EMA tidak berlawanan.
     if total >= SIGNAL_THRESHOLD and align > 0:
         direction = BUY
     elif total <= -SIGNAL_THRESHOLD and align < 0:
@@ -234,20 +165,11 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
     else:
         direction = WAIT
 
-    # Filter pasar bolak-balik (Kaufman Efficiency Ratio)
+    # Filter pasar bolak-balik: efisiensi tren Kaufman atas ER_WINDOW candle.
     path = sum(abs(closes[i] - closes[i - 1]) for i in range(len(closes) - ER_WINDOW, len(closes)))
     er = abs(closes[-1] - closes[-1 - ER_WINDOW]) / path if path > 0 else 0.0
     choppy = er < ER_MIN
     if choppy and direction != WAIT:
-        direction = WAIT
-
-    # Cegah entry saat harga sudah terlalu jauh melompat dari EMA9 (rawan koreksi balik)
-    stretched = False
-    if direction == BUY and e9[-1] is not None and (price - e9[-1]) > MAX_ENTRY_STRETCH_ATR * a:
-        stretched = True
-        direction = WAIT
-    elif direction == SELL and e9[-1] is not None and (e9[-1] - price) > MAX_ENTRY_STRETCH_ATR * a:
-        stretched = True
         direction = WAIT
 
     reasons: list[str] = []
@@ -255,12 +177,7 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
         reasons.append(
             f"Pasar bolak-balik (efisiensi tren {er:.2f} < {ER_MIN:.2f}); sinyal tidak dipaksakan."
         )
-    elif stretched:
-        reasons.append(
-            f"Harga terlalu jauh dari EMA9 (jarak > {MAX_ENTRY_STRETCH_ATR:.2f} ATR); tunggu pullback agar tidak kena SL."
-        )
-
-    if direction == WAIT and not choppy and not stretched:
+    if direction == WAIT and not choppy:
         if abs(total) < SIGNAL_THRESHOLD:
             reasons.append(f"Skor {total:+.0f} belum melewati ambang ±{SIGNAL_THRESHOLD:.0f}.")
         else:
@@ -272,14 +189,7 @@ def analyze_candles(market: str, timeframe: str, candles: Sequence[Candle]) -> A
             if _sgn(f.score) == want and abs(f.score) >= 0.3 * f.weight:
                 reasons.append(f"{f.name}: {f.note}")
 
-    levels = build_levels(
-        direction,
-        price,
-        a,
-        ema_fast=e9[-1],
-        swing_low=support,
-        swing_high=resistance,
-    )
+    levels = build_levels(direction, price, a)
     if direction == BUY and resistance is not None and levels["tp1"] and resistance < levels["tp1"]:
         reasons.append(f"Perhatian: resistance {_fmt(resistance)} berada sebelum TP1.")
     if direction == SELL and support is not None and levels["tp1"] and support > levels["tp1"]:
